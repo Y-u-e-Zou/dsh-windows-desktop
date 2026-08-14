@@ -1,0 +1,23 @@
+appId: com.dsh.windows.desktop
+productName: DSH-Windows桌面版
+npmRebuild: false
+directories:
+  output: dist
+files:
+  - main.js
+  - login.html
+  - help.html
+  - pet.html
+  - assets/**
+  - "!**/*.md"
+asar: true
+afterPack: ./after-pack.js
+win:
+  icon: assets/icon.png
+  target:
+    - nsis
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true

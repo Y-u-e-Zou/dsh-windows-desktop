@@ -1,0 +1,15 @@
+{
+  "name": "dsh-windows-desktop",
+  "version": "0.1.0-rc.6",
+  "description": "DSH-Windows桌面版 (Electron shell)",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^43.4.0",
+    "electron-builder": "^26.15.3"
+  }
+}

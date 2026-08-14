@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { background: transparent; overflow: hidden; height: 100%; }
+body {
+  font-family: system-ui, "Microsoft YaHei", sans-serif;
+  display: flex; flex-direction: column; align-items: center;
+  -webkit-app-region: drag;
+  user-select: none;
+}
+.bubble {
+  text-align: center; padding: 6px 14px; border-radius: 14px;
+  background: rgba(20, 24, 34, 0.88); color: #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  margin-bottom: 2px;
+  -webkit-app-region: no-drag;
+}
+#time { font-size: 19px; font-weight: 700; display: block; line-height: 1.2; }
+#status { font-size: 12px; color: #ffe08a; display: block; min-height: 15px; }
+#pet-img { width: 210px; height: 210px; object-fit: contain; -webkit-user-drag: none; }
+.btns { display: flex; gap: 8px; margin-top: 2px; -webkit-app-region: no-drag; }
+.btns button {
+  width: 34px; height: 34px; border-radius: 50%; border: 0;
+  background: rgba(20, 24, 34, 0.85); color: #fff; font-size: 16px; cursor: pointer;
+}
+.btns button:hover { background: #4d6bfe; }
+@keyframes flash { 0%, 100% { background: rgba(20, 24, 34, 0.88); } 50% { background: #e53935; } }
+.ring { animation: flash 0.5s infinite; }
+@keyframes bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-30px); } }
+.bounce { animation: bounce 0.25s infinite; }
+</style>
+</head>
+<body>
+  <div class="bubble" id="bubble">
+    <span id="time">--:--:--</span>
+    <span id="status"></span>
+  </div>
+  <img id="pet-img" src="assets/pet.png" alt="pet">
+  <div class="btns">
+    <button id="alarm-btn" title="设定闹钟">⏰</button>
+    <button id="timer-btn" title="设定倒计时">⏱</button>
+  </div>
+<script>
+(function () {
+  var timeEl = document.getElementById('time');
+  var statusEl = document.getElementById('status');
+  var bubbleEl = document.getElementById('bubble');
+  var imgEl = document.getElementById('pet-img');
+
+  function updateTime() {
+    var now = new Date();
+    var hh = ('0' + now.getHours()).slice(-2);
+    var mm = ('0' + now.getMinutes()).slice(-2);
+    var ss = ('0' + now.getSeconds()).slice(-2);
+    timeEl.textContent = hh + ':' + mm + ':' + ss;
+  }
+  updateTime();
+  setInterval(updateTime, 1000);
+
+  window.__setStatus = function (text) { statusEl.textContent = text || ''; };
+
+  window.__ring = function (label) {
+    statusEl.textContent = (label || '') + ' 时间到啦！';
+    bubbleEl.classList.add('ring');
+    imgEl.classList.add('bounce');
+    setTimeout(function () {
+      bubbleEl.classList.remove('ring');
+      imgEl.classList.remove('bounce');
+      statusEl.textContent = '';
+    }, 6000);
+  };
+
+  document.getElementById('alarm-btn').onclick = function () { location.href = 'dsh-pet://alarm'; };
+  document.getElementById('timer-btn').onclick = function () { location.href = 'dsh-pet://timer'; };
+})();
+</script>
+</body>
+</html>
