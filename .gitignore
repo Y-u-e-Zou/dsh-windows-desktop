@@ -1,0 +1,14 @@
+# 依赖与运行时（体积大 / 含第三方包，由构建者自行准备）
+node_modules/
+dsh-runtime/
+update-tools/
+
+# 打包产物（Release 时另行上传）
+dist/
+
+# 本地缓存与日志
+.npm-cache/
+.electron-cache/
+.electron-builder-cache/
+dsh-desktop.log
+*.log
