@@ -342,6 +342,34 @@ function applyNativePickerPatch(runtimeRoot) {
   } catch (e) { /* ignore */ }
 }
 
+// Re-apply our dsh tweaks after any dsh (re)install: npm install restores the
+// default tool descriptions and permission confirmation copy. Keeps (1) the
+// recycle-bin deletion guidance in the pwsh tool and (2) the strong
+// Full-access warning in the permission confirmation dialog.
+function applyDshTweaks(runtimeRoot) {
+  // (1) recycle-bin deletion guidance
+  try {
+    const pwshPath = path.join(runtimeRoot, 'node_modules', '@deepseek-ai', 'dsh-tool-pwsh', 'lib', 'index.js');
+    let c = fs.readFileSync(pwshPath, 'utf8');
+    if (!c.includes('SendToRecycleBin')) {
+      const old = 'not a command failure. " + (backgroundEnabled ?';
+      const neo = 'not a command failure. When deleting files or directories, move them to the Windows Recycle Bin instead of permanently deleting them — use Add-Type -AssemblyName Microsoft.VisualBasic, then [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile(\'path\',\'OnlyErrorDialogs\',\'SendToRecycleBin\') for a file, or DeleteDirectory(...) for a directory. Permanently delete (Remove-Item) only when the user explicitly asks for permanent removal. " + (backgroundEnabled ?';
+      if (c.includes(old)) { c = c.replace(old, neo); fs.writeFileSync(pwshPath, c, 'utf8'); }
+    }
+  } catch (e) { /* ignore */ }
+
+  // (2) strong Full-access warning copy
+  try {
+    const permPath = path.join(runtimeRoot, 'node_modules', '@deepseek-ai', 'dsh-client-ui-permission-presets', 'lib', 'client.js');
+    let c = fs.readFileSync(permPath, 'utf8');
+    if (!c.includes('太可怕了')) {
+      const old = '\t\t\t"confirm.title": "确认启用 Full access？",\n\t\t\t"confirm.description": "启用 Full access 后，agent 将减少确认步骤，并且可以直接执行更多操作，包括敏感操作、文件修改或外部命令。仅建议在你信任当前任务时使用。",\n\t\t\t"confirm.acknowledge": "我已了解风险，并愿意继续",\n\t\t\t"confirm.cancel": "取消",\n\t\t\t"confirm.enable": "启用 Full access"';
+      const neo = '\t\t\t"confirm.title": "⚠️ 高风险警告：确认启用 Full access？",\n\t\t\t"confirm.description": "Full access 是一个高风险选项，非专业人士不建议使用。启用后 AI 将不受任何限制，可能读写、覆盖甚至删除你电脑里的所有文件（有把整个电脑文件删光的风险）。",\n\t\t\t"confirm.acknowledge": "我已了解风险，并愿意继续",\n\t\t\t"confirm.cancel": "太可怕了，那我不用这个模式了",\n\t\t\t"confirm.enable": "没问题，我是专家，会控制预防这种情况"';
+      if (c.includes(old)) { c = c.replace(old, neo); fs.writeFileSync(permPath, c, 'utf8'); }
+    }
+  } catch (e) { /* ignore */ }
+}
+
 async function performUpdate(targetVersion) {
   const npmCli = npmCliPath();
   if (!npmCli) throw new Error('update tooling not found in this installation');
@@ -379,6 +407,7 @@ async function performUpdate(targetVersion) {
 
   // 3.5) pin the browse directory picker (native's koffi worker crashes under Electron's Node)
   applyNativePickerPatch(udRuntime);
+  applyDshTweaks(udRuntime);
 
   // 4) restart the server with the updated runtime, refresh the UI + version
   serverProc = startServer(currentAccountHome());
