@@ -1,3 +1,6 @@
+# 个人隐私规则（每台机器各自填写，不上传）
+.githooks/private-rules.txt
+
 # 依赖与运行时（体积大 / 含第三方包，由构建者自行准备）
 node_modules/
 dsh-runtime/

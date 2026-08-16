@@ -13,6 +13,11 @@ if not errorlevel 1 (
     if exist ".githooks\pre-commit" (
       git config core.hooksPath .githooks
       echo [guard] privacy hooks enabled: .githooks
+      if exist ".githooks\private-rules.example.txt" (
+        if not exist ".githooks\private-rules.txt" (
+          echo [guard] tip: copy .githooks\private-rules.example.txt to .githooks\private-rules.txt to enable personal path/e-mail warnings
+        )
+      )
     )
   )
 )

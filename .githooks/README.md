@@ -10,7 +10,7 @@
 | 拦截 | API Key / Token：DeepSeek/OpenAI 风格长密钥（sk- 开头）、GitHub PAT（ghp_ / github_pat_）、AWS AKIA 等 | 阻止，报告 文件:行 |
 | 拦截 | 带字面值的密码（password: "..."） | 阻止，报告 文件:行 |
 | 拦截 | 隐私文件：`.credentials.yaml`、`.env*`、`account-state.json`、`pet-chat-history.json`、`pet-persona.json`、`pet-backend.json`、`pet-schedule.json`、`sessions/`、`storages/`、`settings.yaml`、`*.log`、`.npmrc`、SSH 私钥、`.dsh/`、`.dsh-accounts/` | 阻止，报告文件名 |
-| 警告 | 个人邮箱、本地绝对路径（如 `C:\Users\<name>` 或你的项目盘路径） | 提示，不阻止；`-Strict` 可升级为拦截 |
+| 警告 | 个人邮箱、本地绝对路径（本机 `.githooks/private-rules.txt` 里自填，每行一条正则） | 提示，不阻止；`-Strict` 可升级为拦截 |
 | 警告 | 图片内嵌创作元数据（Photoshop XMP / AIGC 生成标记） | 提示，不阻止 |
 
 ## 使用
@@ -18,6 +18,10 @@
 - 本机当前仓库已启用。
 - 新克隆 / 换机器：**双击 `dist.bat` 构建时会自动启用**，无需手动配置；
   兜底命令：`git config core.hooksPath .githooks`
+- 个人路径/邮箱警告（可选）：复制 `.githooks/private-rules.example.txt` 为
+  `.githooks/private-rules.txt` 并按需填写（每行一条，`#` 开头为注释；
+  路径直接写如 `C:\Users\你`，反斜杠无需转义）。
+  该文件已加入 .gitignore，不会上传；不建也能用，只是没有这类提醒。
 - 紧急放行（自担风险）：`git commit --no-verify` / `git push --no-verify`
 - 手动试跑：`pwsh -NoProfile -File .githooks/guard.ps1 -Mode commit`
 

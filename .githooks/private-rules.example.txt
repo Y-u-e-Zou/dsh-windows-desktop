@@ -1,0 +1,11 @@
+# DSH privacy guard: personal warning rules (optional)
+# ---------------------------------------------------
+# 1. Copy this file to private-rules.txt in this same folder.
+# 2. Edit it: one regex per line; lines starting with # are ignored.
+#    Matching lines in committed files produce a WARNING (not a block).
+# 3. The file is gitignored, so your rules never get uploaded.
+#
+# Examples (remove the leading # to enable):
+# C:\Users\yourname
+# D:\projects\my-project
+# yourname@example.com

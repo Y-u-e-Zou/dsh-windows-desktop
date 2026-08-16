@@ -42,8 +42,6 @@ Set-Location $root
 $KEY_RE  = 'sk-[0-9a-zA-Z_-]{16,}|ghp_[0-9a-zA-Z]{20,}|github_pat_[0-9a-zA-Z_]{20,}|AKIA[0-9A-Z]{16}|DEEPSEEK_API_KEY[[:space:]]*:[[:space:]]*["'']?[0-9a-zA-Z_-]{8,}|Authorization[[:space:]]*:[[:space:]]*Bearer[[:space:]]+[0-9a-zA-Z._-]{16,}|_authToken[[:space:]]*[:=][[:space:]]*["'']?[0-9a-zA-Z]{8,}'
 $PWD_RE  = 'password[[:space:]]*[:=][[:space:]]*["''][^"'']{6,}["'']'
 $FILE_RE = '\.credentials(\.yaml)?$|\.env(\.[A-Za-z0-9_-]+)?$|account-state\.json$|pet-(chat-history|persona|backend|schedule)\.json$|(^|/)sessions/|(^|/)storages/|(^|/)settings\.yaml$|dsh-desktop\.log$|\.log$|\.npmrc$|id_rsa|id_ed25519|\.pem$|\.pfx$|(^|/)\.dsh(-accounts)?/'
-$PATH_RE = 'C:\\Users\\zouyue|E:\\DS-harness'
-$MAIL_RE = '824083772@qq\.com'
 $PNG_RE  = 'ContentProducer|AIGC|softwareAgent'
 $EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
 # Pass patterns via a file: PS 5.1 mangles argv that contains quote chars,
@@ -51,6 +49,19 @@ $EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
 $patternFile = Join-Path $env:TEMP 'dsh-guard-key-pattern.txt'
 $patternOk = $true
 try { Set-Content -Path $patternFile -Value @($KEY_RE, $PWD_RE) -Encoding ASCII } catch { $patternOk = $false }
+# Personal warning rules are per-machine and never committed:
+# .githooks/private-rules.txt (one regex per line, # = comment).
+$privateRulesFile = Join-Path $root '.githooks\private-rules.txt'
+$privatePatternFile = Join-Path $env:TEMP 'dsh-guard-private-pattern.txt'
+$privateRules = @()
+if (Test-Path $privateRulesFile) {
+  try {
+    $privateRules = @(Get-Content -Path $privateRulesFile -Encoding UTF8 | ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith('#') } | ForEach-Object { $_.Replace('\', '\\') })
+  } catch { }
+}
+if ($privateRules.Count -gt 0) {
+  try { Set-Content -Path $privatePatternFile -Value $privateRules -Encoding ASCII } catch { }
+}
 
 $blocked = New-Object System.Collections.Generic.List[string]
 $warned  = New-Object System.Collections.Generic.List[string]
@@ -86,8 +97,13 @@ if ($Mode -eq 'commit') {
   }
   Scan-Text -GitArgs @('grep', '--cached', '-n', '-I', '-E', '-f', $patternFile, '--', '.') -Tag 'API key/password'
   Scan-Files -Names $stagedNames -Tag 'privacy file'
-  Scan-Warn -GitArgs @('grep', '--cached', '-n', '-I', '-E', "$PATH_RE|$MAIL_RE", '--', '.') -Tag 'local path/e-mail'
-  Scan-Warn -GitArgs @('grep', '--cached', '-a', '-l', '-E', $PNG_RE, '--', '*.png') -Tag 'image metadata'
+  if ($privateRules.Count -gt 0) {
+    Scan-Warn -GitArgs (@('grep', '--cached', '-n', '-I', '-E', '-f', $privatePatternFile, '--') + $stagedNames) -Tag 'personal path/e-mail'
+  }
+  $stagedPngs = @($stagedNames | Where-Object { $_ -like '*.png' })
+  if ($stagedPngs.Count -gt 0) {
+    Scan-Warn -GitArgs (@('grep', '--cached', '-a', '-l', '-E', $PNG_RE, '--') + $stagedPngs) -Tag 'image metadata'
+  }
 }
 
 # ---------------- push mode: scan the new commits to be pushed ----------------
@@ -117,7 +133,9 @@ if ($Mode -eq 'push') {
     Scan-Files -Names $names -Tag 'privacy file'
     if ($names.Count -gt 0) {
       Scan-Text -GitArgs (@('grep', '-n', '-I', '-E', '-f', $patternFile, $localSha, '--') + $names) -Tag 'API key/password'
-      Scan-Warn -GitArgs (@('grep', '-n', '-I', '-E', "$PATH_RE|$MAIL_RE", $localSha, '--') + $names) -Tag 'local path/e-mail'
+      if ($privateRules.Count -gt 0) {
+        Scan-Warn -GitArgs (@('grep', '-n', '-I', '-E', '-f', $privatePatternFile, $localSha, '--') + $names) -Tag 'personal path/e-mail'
+      }
       $pngs = @($names | Where-Object { $_ -like '*.png' })
       if ($pngs.Count -gt 0) {
         Scan-Warn -GitArgs (@('grep', '-a', '-l', '-E', $PNG_RE, $localSha, '--') + $pngs) -Tag 'image metadata'
