@@ -15,8 +15,9 @@
 
 ## 使用
 
-- 本机当前仓库已启用（`git config core.hooksPath .githooks`）。
-- 新克隆 / 换机器后启用一次：`git config core.hooksPath .githooks`
+- 本机当前仓库已启用。
+- 新克隆 / 换机器：**双击 `dist.bat` 构建时会自动启用**，无需手动配置；
+  兜底命令：`git config core.hooksPath .githooks`
 - 紧急放行（自担风险）：`git commit --no-verify` / `git push --no-verify`
 - 手动试跑：`pwsh -NoProfile -File .githooks/guard.ps1 -Mode commit`
 

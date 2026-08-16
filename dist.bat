@@ -3,6 +3,20 @@ rem DeepSeek Harness desktop shell - build installer
 rem Double-click this file to build the .exe installer into the "dist" folder.
 cd /d "%~dp0"
 
+rem Enable the upload privacy guard (pre-commit / pre-push git hooks).
+rem core.hooksPath is a per-clone local setting and cannot travel with the
+rem repo, so dist.bat re-enables it automatically after a fresh clone.
+where git >nul 2>nul
+if not errorlevel 1 (
+  git rev-parse --git-dir >nul 2>nul
+  if not errorlevel 1 (
+    if exist ".githooks\pre-commit" (
+      git config core.hooksPath .githooks
+      echo [guard] privacy hooks enabled: .githooks
+    )
+  )
+)
+
 rem Optional: uncomment the line below if GitHub downloads are too slow.
 rem set ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/
 
