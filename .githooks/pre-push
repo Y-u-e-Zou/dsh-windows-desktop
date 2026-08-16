@@ -1,0 +1,13 @@
+#!/bin/sh
+# DSH privacy guard: pre-push scan (see .githooks/README.md)
+PWSH=""
+if command -v pwsh >/dev/null 2>&1; then
+  PWSH="pwsh"
+elif command -v powershell.exe >/dev/null 2>&1; then
+  PWSH="powershell.exe"
+else
+  echo "[guard] PowerShell not found; skipping check."
+  exit 0
+fi
+TOP="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+exec "$PWSH" -NoProfile -ExecutionPolicy Bypass -File "$TOP/.githooks/guard.ps1" -Mode push
