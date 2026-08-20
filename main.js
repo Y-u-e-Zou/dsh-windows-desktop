@@ -122,6 +122,13 @@ function resolveLaunchCommand() {
 }
 
 function startServer(dshHome) {
+  // Re-apply shell tweaks to whichever runtime this launch uses, so a
+  // reinstall or runtime refresh never loses them (idempotent checks).
+  try {
+    const rt = dshRuntimeRoot();
+    if (rt) { applyNativePickerPatch(rt); applyDshTweaks(rt); }
+  } catch (e) { /* ignore */ }
+
   const cmd = resolveLaunchCommand();
   if (!cmd) return null;
 
@@ -353,7 +360,7 @@ function applyDshTweaks(runtimeRoot) {
     let c = fs.readFileSync(pwshPath, 'utf8');
     if (!c.includes('垃圾箱')) {
       const old = 'not a command failure. " + (backgroundEnabled ?';
-      const neo = 'not a command failure. When deleting files or directories, do NOT permanently delete them. Instead, move them into a folder named 垃圾箱 inside the session workspace (create it first with New-Item -ItemType Directory -Force (Join-Path (Get-Location) "垃圾箱") if missing), using Move-Item with a timestamp suffix to avoid name collisions. Only use Remove-Item (permanent delete) when the user explicitly asks for permanent removal. " + (backgroundEnabled ?';
+      const neo = 'not a command failure. When deleting files or directories, do NOT permanently delete them. Instead, move them into a folder named 垃圾箱 inside the session workspace (create it first with New-Item -ItemType Directory -Force (Join-Path (Get-Location) \\"垃圾箱\\") if missing), using Move-Item with a timestamp suffix to avoid name collisions. Only use Remove-Item (permanent delete) when the user explicitly asks for permanent removal. " + (backgroundEnabled ?';
       if (c.includes(old)) { c = c.replace(old, neo); fs.writeFileSync(pwshPath, c, 'utf8'); }
     }
   } catch (e) { /* ignore */ }
@@ -381,6 +388,129 @@ function applyDshTweaks(runtimeRoot) {
   } catch (e) { /* ignore */ }
 }
 
+// ---------------------------------------------------------------- update hardening
+
+// Files our runtime patches rewrite. After every update the CommonJS ones are
+// syntax-checked again (the ESM browser bundles can't be parsed by `--check`
+// and are covered by the boot probe instead).
+function patchedFiles(runtimeRoot) {
+  return [
+    path.join(runtimeRoot, 'node_modules', '@deepseek-ai', 'dsh-tool-pwsh', 'lib', 'index.js'),
+    path.join(runtimeRoot, 'node_modules', '@deepseek-ai', 'dsh-host-directory-picker-native', 'lib', 'index.js'),
+    path.join(runtimeRoot, 'node_modules', '@deepseek-ai', 'dsh-client-ui-permission-presets', 'lib', 'client.js'),
+    path.join(runtimeRoot, 'node_modules', '@deepseek-ai', 'dsh-client-ui-conversation', 'lib', 'client.js'),
+  ];
+}
+
+function readDshPackageVersion(runtimeRoot) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(runtimeRoot, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), 'utf8')).version;
+  } catch (e) { return null; }
+}
+
+function checkJsSyntax(file) {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(process.execPath, ['--check', file], {
+        env: Object.assign({}, process.env, { ELECTRON_RUN_AS_NODE: '1' }),
+        windowsHide: true,
+        stdio: 'ignore',
+      });
+    } catch (e) { return resolve(false); }
+    child.on('error', () => resolve(false));
+    child.on('exit', (code) => resolve(code === 0));
+  });
+}
+
+// Of the files we patch, only the ones whose ORIGINAL already passes `--check`
+// (CommonJS) can be syntax-verified afterwards; the ESM browser bundles are
+// excluded rather than misreported as broken.
+async function verifiableJsFiles(runtimeRoot) {
+  const out = [];
+  for (const f of patchedFiles(runtimeRoot)) {
+    if (!fs.existsSync(f)) continue;
+    if (await checkJsSyntax(f)) out.push(f);
+  }
+  return out;
+}
+
+async function verifyPatchedFiles(files) {
+  const bad = [];
+  for (const f of files) {
+    if (!(await checkJsSyntax(f))) bad.push(path.basename(f));
+  }
+  if (bad.length) throw new Error('patched files failed syntax check: ' + bad.join(', '));
+}
+
+function findFreePort() {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.once('error', () => resolve(0));
+    srv.listen(0, HOST, () => {
+      const p = srv.address().port;
+      srv.close(() => resolve(p));
+    });
+  });
+}
+
+// Boot the freshly installed runtime on a throwaway port: proves the new tree
+// is complete and its built-in plugin stack loads BEFORE the live server is
+// switched to it. Uses the same DSH_HOME / workspace / app-dir env as a real
+// launch, so the actual web profile (including third-party plugins) is
+// exercised too. The probe process is killed afterwards.
+function probeRuntimeBoot(runtimeRoot) {
+  const bin = path.join(runtimeRoot, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js');
+  return new Promise((resolve) => {
+    findFreePort().then((port) => {
+      if (!port) return resolve({ ok: false, tail: 'no free port' });
+      let child;
+      try {
+        const env = Object.assign({}, process.env, { ELECTRON_RUN_AS_NODE: '1' });
+        const home = currentAccountHome();
+        if (home) env.DSH_HOME = home;
+        env.DSH_APP_DIR = path.dirname(process.execPath);
+        child = spawn(process.execPath, ['--expose-internals', bin, 'web', '--port', String(port)], {
+          cwd: process.env.DSH_WORKSPACE || app.getPath('home'),
+          env,
+          windowsHide: true,
+          stdio: ['ignore', 'ignore', 'pipe'],
+        });
+      } catch (e) { return resolve({ ok: false, tail: String((e && e.message) || e) }); }
+      let settled = false;
+      let tail = '';
+      const cap = (s) => { tail = (tail + s.toString()).slice(-1000); };
+      child.stderr.on('data', cap);
+      const finish = (ok) => {
+        if (settled) return;
+        settled = true;
+        clearInterval(poll);
+        clearTimeout(timer);
+        if (ok) {
+          try { spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' }); } catch (e) { /* ignore */ }
+        }
+        resolve({ ok, tail: ok ? '' : tail });
+      };
+      const poll = setInterval(() => {
+        portOpen(port).then((ok) => { if (ok) finish(true); });
+      }, 500);
+      const timer = setTimeout(() => finish(false), 30000);
+      child.on('error', () => finish(false));
+      child.on('exit', () => finish(false));
+    });
+  });
+}
+
+async function verifyUpdatedRuntime(runtimeRoot, targetVersion) {
+  const bin = path.join(runtimeRoot, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js');
+  if (!fs.existsSync(bin)) throw new Error('installed runtime is incomplete (bin.js missing)');
+  const v = readDshPackageVersion(runtimeRoot);
+  if (!v) throw new Error('installed runtime is incomplete (dsh package.json unreadable)');
+  if (v !== targetVersion) throw new Error('installed version mismatch: expected ' + targetVersion + ', got ' + v);
+  const probe = await probeRuntimeBoot(runtimeRoot);
+  if (!probe.ok) throw new Error('installed runtime failed to boot on a test port' + (probe.tail ? ': ' + probe.tail : ''));
+}
+
 async function performUpdate(targetVersion) {
   const npmCli = npmCliPath();
   if (!npmCli) throw new Error('update tooling not found in this installation');
@@ -388,43 +518,138 @@ async function performUpdate(targetVersion) {
   // 1) stop the server we manage
   stopServer();
 
-  // 2) ensure a writable runtime copy in userData (keep the bundled one pristine)
+  // 2) snapshot the current writable runtime so a failed update can roll back
   const udRuntime = path.join(app.getPath('userData'), 'dsh-runtime');
-  if (!fs.existsSync(path.join(udRuntime, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'))) {
-    const bundled = path.join(process.resourcesPath, 'dsh-runtime');
-    if (fs.existsSync(bundled)) fs.cpSync(bundled, udRuntime, { recursive: true });
+  const backupDir = path.join(app.getPath('userData'), 'dsh-runtime.prev');
+  const hadRuntime = fs.existsSync(path.join(udRuntime, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'));
+  if (hadRuntime) {
+    try { fs.rmSync(backupDir, { recursive: true, force: true }); } catch (e) { /* ignore */ }
+    try {
+      fs.renameSync(udRuntime, backupDir);
+    } catch (e) {
+      throw new Error('无法备份当前运行时（可能有程序占用），已取消更新：' + String((e && e.message) || e));
+    }
   }
 
-  // 3) install the new dsh into that writable runtime
-  await new Promise((resolve, reject) => {
-    const env = Object.assign({}, process.env, { ELECTRON_RUN_AS_NODE: '1' });
-    const child = spawn(process.execPath, [
-      npmCli, 'install', '--prefix', udRuntime,
-      `@deepseek-ai/dsh@${targetVersion}`,
-      '--no-audit', '--no-fund', '--loglevel=error',
-    ], {
-      cwd: udRuntime,
-      env,
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let tail = '';
-    const cap = s => { tail = (tail + s.toString()).slice(-1000); };
-    child.stdout.on('data', cap);
-    child.stderr.on('data', cap);
-    child.on('error', reject);
-    child.on('exit', code => (code === 0 ? resolve() : reject(new Error(tail || `npm install exited ${code}`))));
-  });
+  try {
+    // 2.5) baseline copy (keep the bundled one pristine)
+    if (!fs.existsSync(path.join(udRuntime, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'))) {
+      const bundled = path.join(process.resourcesPath, 'dsh-runtime');
+      if (fs.existsSync(bundled)) fs.cpSync(bundled, udRuntime, { recursive: true });
+    }
 
-  // 3.5) pin the browse directory picker (native's koffi worker crashes under Electron's Node)
-  applyNativePickerPatch(udRuntime);
-  applyDshTweaks(udRuntime);
+    // 3) install the new dsh into that writable runtime
+    await new Promise((resolve, reject) => {
+      const env = Object.assign({}, process.env, { ELECTRON_RUN_AS_NODE: '1' });
+      const child = spawn(process.execPath, [
+        npmCli, 'install', '--prefix', udRuntime,
+        `@deepseek-ai/dsh@${targetVersion}`,
+        '--no-audit', '--no-fund', '--loglevel=error',
+      ], {
+        cwd: udRuntime,
+        env,
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let tail = '';
+      const cap = s => { tail = (tail + s.toString()).slice(-1000); };
+      child.stdout.on('data', cap);
+      child.stderr.on('data', cap);
+      child.on('error', reject);
+      child.on('exit', code => (code === 0 ? resolve() : reject(new Error(tail || `npm install exited ${code}`))));
+    });
+
+    // 3.4) validate the fresh tree (complete / right version / boots) BEFORE
+    //      patching; remember which patched files are CommonJS-checkable
+    const checkable = await verifiableJsFiles(udRuntime);
+    await verifyUpdatedRuntime(udRuntime, targetVersion);
+
+    // 3.5) pin the browse directory picker (native's koffi worker crashes under Electron's Node)
+    applyNativePickerPatch(udRuntime);
+    applyDshTweaks(udRuntime);
+    await verifyPatchedFiles(checkable);
+  } catch (e) {
+    // roll back: drop the broken copy and restore the snapshot (or let the
+    // app fall back to the pristine bundled runtime when there was none)
+    try {
+      fs.rmSync(udRuntime, { recursive: true, force: true });
+      if (hadRuntime) fs.renameSync(backupDir, udRuntime);
+    } catch (e2) { /* ignore */ }
+    throw new Error('update failed and was rolled back to the previous version: ' + String((e && e.message) || e));
+  }
+
+  // success: drop the snapshot
+  if (hadRuntime) { try { fs.rmSync(backupDir, { recursive: true, force: true }); } catch (e) { /* ignore */ } }
+
+  // 3.6) keep third-party profile plugins in lockstep with the new harness
+  const pluginSync = await syncProfilePlugins(udRuntime);
+  const pluginWarnings = pluginSync && !pluginSync.ok ? [`第三方插件同步失败：${pluginSync.error}`] : [];
 
   // 4) restart the server with the updated runtime, refresh the UI + version
   serverProc = startServer(currentAccountHome());
   await waitForPort(PORT, 60000);
   applyVersionDisplays();
   if (win) win.webContents.reload();
+  return pluginWarnings;
+}
+
+// Sync the current account's third-party `web`-profile plugins (dependencies
+// that also appear in `dsh.profile.bundles`) through the dsh CLI's pnpm
+// forwarder, so a harness upgrade never leaves stale plugins behind. The CLI
+// reconciles `dsh.profile.bundles` against the installed state afterwards.
+async function syncProfilePlugins(runtimeRoot) {
+  const home = currentAccountHome();
+  if (!home) return { ok: true, synced: false, reason: 'no-account' };
+  const profileDir = path.join(home, 'profiles', 'web');
+  const manifestPath = path.join(profileDir, 'package.json');
+  if (!fs.existsSync(manifestPath)) return { ok: true, synced: false, reason: 'no-profile' };
+
+  let targets;
+  try {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    const deps = Object.keys(manifest.dependencies || {});
+    const bundles = (manifest.dsh && manifest.dsh.profile && manifest.dsh.profile.bundles) || [];
+    targets = deps.filter((d) => bundles.includes(d));
+  } catch (e) {
+    return { ok: false, error: 'could not read profile manifest: ' + String((e && e.message) || e) };
+  }
+  if (!targets.length) return { ok: true, synced: false, reason: 'no-plugins' };
+
+  // pnpm 11 auto-selects only releases at least `minimumReleaseAge` (default 3
+  // days) old — brand-new plugin releases would be silently skipped. Clear it
+  // so the sync can reach the latest versions.
+  const wsPath = path.join(profileDir, 'pnpm-workspace.yaml');
+  try {
+    let ws = fs.readFileSync(wsPath, 'utf8');
+    const re = /^(\s*)minimumReleaseAge:\s*(\S.*)?$/m;
+    if (re.test(ws)) ws = ws.replace(re, '$1minimumReleaseAge: 0');
+    else ws = ws.replace(/\s+$/, '') + '\nminimumReleaseAge: 0\n';
+    fs.writeFileSync(wsPath, ws, 'utf8');
+  } catch (e) { /* ignore */ }
+
+  const bin = path.join(runtimeRoot, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js');
+  if (!fs.existsSync(bin)) return { ok: false, error: 'dsh CLI not found in runtime' };
+
+  try {
+    await new Promise((resolve, reject) => {
+      const env = Object.assign({}, process.env, { ELECTRON_RUN_AS_NODE: '1', DSH_HOME: home });
+      const child = spawn(process.execPath, ['--expose-internals', bin, 'plugin', '--profile', 'web', 'update', ...targets], {
+        cwd: profileDir,
+        env,
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let tail = '';
+      const cap = (s) => { tail = (tail + s.toString()).slice(-1000); };
+      child.stdout.on('data', cap);
+      child.stderr.on('data', cap);
+      child.on('error', reject);
+      child.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(tail || `pnpm update exited ${code}`))));
+    });
+    return { ok: true, synced: true, targets };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
 }
 
 async function checkForUpdates(manual = false) {
@@ -440,7 +665,7 @@ async function checkForUpdates(manual = false) {
         type: 'info',
         title: '检查更新',
         message: `DSH-Windows桌面版 ${latest} 可用`,
-        detail: `当前版本 ${cur}，是否更新？`,
+        detail: `当前版本 ${cur}，是否更新？\n\n更新 Harness 后会自动同步升级第三方插件。`,
         buttons: ['立即更新', '稍后'],
         defaultId: 0,
         cancelId: 1,
@@ -448,8 +673,10 @@ async function checkForUpdates(manual = false) {
       if (r.response === 0) {
         updating = true;
         try {
-          await performUpdate(latest);
-          await dialog.showMessageBox({ type: 'info', title: 'Harness Update', message: `Updated to ${latest}.` });
+          const pluginWarnings = (await performUpdate(latest)) || [];
+          let msg = `Updated to ${latest}.`;
+          if (pluginWarnings.length) msg += `\n\n⚠️ ${pluginWarnings.join('\n⚠️ ')}`;
+          await dialog.showMessageBox({ type: pluginWarnings.length ? 'warning' : 'info', title: 'Harness Update', message: msg });
         } catch (e) {
           await dialog.showMessageBox({ type: 'error', title: 'Update Failed', message: String((e && e.message) || e) });
           serverProc = startServer(currentAccountHome());   // try to recover
@@ -458,7 +685,12 @@ async function checkForUpdates(manual = false) {
         }
       }
     } else if (manual) {
-      await dialog.showMessageBox({ type: 'info', title: 'Harness Update', message: `You are up to date (${cur}).` });
+      const runtime = dshRuntimeRoot();
+      const sync = runtime ? await syncProfilePlugins(runtime) : null;
+      let msg = `You are up to date (${cur}).`;
+      if (sync && sync.synced) msg += `\n\n第三方插件已同步：${sync.targets.join('、')}。完全重启 Harness 后生效。`;
+      else if (sync && !sync.ok) msg += `\n\n⚠️ 第三方插件同步失败：${sync.error}`;
+      await dialog.showMessageBox({ type: sync && !sync.ok ? 'warning' : 'info', title: 'Harness Update', message: msg });
     }
   } catch (e) {
     if (manual) {
@@ -608,6 +840,45 @@ function iconPath(size) {
   return fs.existsSync(p) ? p : null;
 }
 
+// ---------------------------------------------------------------- peak-hour banner
+
+// 界面最顶部的常驻提示条：高峰时段 token 价格贵，提醒节省 token。
+// 由壳子在主窗口每次完成页面加载后注入；main.js 不随 harness 更新被覆盖，永久生效。
+const PEAK_BANNER_ID = 'dsh-peak-banner';
+const PEAK_BANNER_TEXT = '高峰时段（北京时间 9:00 - 12:00、14:00 - 18:00）token 价格贵，请节省 token';
+const PEAK_BANNER_CSS = `
+#${PEAK_BANNER_ID}{flex:none;box-sizing:border-box;width:100%;min-height:26px;display:flex;align-items:center;justify-content:center;gap:8px;padding:3px 12px;background:linear-gradient(90deg,rgba(255,176,32,.14),rgba(255,176,32,.24),rgba(255,176,32,.14));color:var(--dsw-alias-label-primary,#e8e8e8);border-bottom:1px solid rgba(255,176,32,.35);font-size:12px;line-height:18px;letter-spacing:.2px;user-select:none;text-align:center}
+#${PEAK_BANNER_ID} .dsh-peak-text{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#${PEAK_BANNER_ID} .dsh-peak-close{flex:none;width:18px;height:18px;border:none;background:transparent;color:inherit;opacity:.6;cursor:pointer;border-radius:4px;padding:0;font-size:14px;line-height:18px;display:grid;place-items:center}
+#${PEAK_BANNER_ID} .dsh-peak-close:hover{opacity:1;background:rgba(255,255,255,.14)}
+body{display:flex!important;flex-direction:column!important;height:100vh!important;overflow:hidden!important;margin:0!important}
+#root{flex:1 1 0%!important;min-height:0!important;height:auto!important}
+`;
+
+function injectPeakBanner(wc) {
+  wc.insertCSS(PEAK_BANNER_CSS).catch(() => {});
+  const id = JSON.stringify(PEAK_BANNER_ID);
+  const text = JSON.stringify(PEAK_BANNER_TEXT);
+  wc.executeJavaScript(`(() => {
+    if (document.getElementById(${id})) return;
+    const bar = document.createElement('div');
+    bar.id = ${id};
+    const label = document.createElement('span');
+    label.className = 'dsh-peak-text';
+    label.textContent = ${text};
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'dsh-peak-close';
+    close.title = '本次会话不再显示';
+    close.setAttribute('aria-label', '关闭提示条');
+    close.textContent = '\\u00d7';
+    close.addEventListener('click', () => bar.remove());
+    bar.appendChild(label);
+    bar.appendChild(close);
+    document.body.prepend(bar);
+  })();`).catch(() => {});
+}
+
 function createWindow() {
   const icon = iconPath(256);
   win = new BrowserWindow({
@@ -627,6 +898,14 @@ function createWindow() {
 
   // keep our versioned title (don't let the page <title> overwrite it)
   win.on('page-title-updated', (e) => e.preventDefault());
+
+  // inject the peak-hour reminder banner after every full load of the web GUI
+  win.webContents.on('did-finish-load', () => {
+    try {
+      if (!win || win.isDestroyed()) return;
+      if (win.webContents.getURL().startsWith(WEB_URL)) injectPeakBanner(win.webContents);
+    } catch (e) { /* ignore */ }
+  });
 
   // open external links in the default browser, never inside the shell
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -666,6 +945,80 @@ function showWindow() {
   win.focus();
 }
 
+// ---------------------------------------------------------------- help / custom diff list
+
+// 当前版本相对原版 Harness 的定制改动清单（只保留"当前"差异，条目过时即删除——
+// 帮助窗口直接渲染此清单，不记录历史）。改任何补丁或壳子功能时同步更新这里：
+// 运行时补丁条目带 verify，帮助窗口打开时按活跃 runtime 实测是否生效。
+const CUSTOM_MODIFICATIONS = [
+  {
+    id: 'accounts',
+    title: '多账号隔离',
+    detail: '每个 API Key 使用独立的数据目录，聊天记录互不可见。',
+  },
+  {
+    id: 'app-update',
+    title: '应用内检查更新',
+    detail: '菜单「检查更新」可直接查询并一键升级 Harness 本体，并自动把 profile 中的第三方插件同步升级到最新版本（Harness 已是最新时也会同步插件）；更新前自动备份运行时，安装后先做完整性校验与试启动，失败自动回滚到更新前版本，升级后自动重新应用全部定制。',
+  },
+  {
+    id: 'pet',
+    title: '桌面精灵',
+    detail: '桌面鲸鱼娘小精灵：置顶显示本地时间，支持闹钟与倒计时。',
+  },
+  {
+    id: 'peak-banner',
+    title: '高峰时段提示条',
+    detail: '界面最顶部常驻提示「高峰时段（北京时间 9:00 - 12:00、14:00 - 18:00）token 价格贵」，提醒节省 token；右侧 × 可临时关闭（仅本次会话，下次打开仍显示）。',
+  },
+  {
+    id: 'picker',
+    title: '目录选择器（PowerShell 版）',
+    detail: '设置工作区时改用 Windows 原生文件夹框，绕开部分机器上会崩溃的 koffi 原生组件，默认定位到安装目录。',
+    verify: { file: 'node_modules/@deepseek-ai/dsh-host-directory-picker-native/lib/index.js', marker: 'pickWin32ViaPowerShell' },
+  },
+  {
+    id: 'recycle-bin',
+    title: '删除保护（垃圾箱）',
+    detail: 'AI 删除文件/目录时移到工作区内的 垃圾箱 文件夹，而非彻底删除；需要时可从该文件夹恢复。',
+    verify: { file: 'node_modules/@deepseek-ai/dsh-tool-pwsh/lib/index.js', marker: '垃圾箱' },
+  },
+  {
+    id: 'full-access-warning',
+    title: 'Full access 高风险警告',
+    detail: '启用 Full access 时弹出强警告文案，需明确确认（权限设置弹窗与聊天内切换两处）。',
+    verify: [
+      { file: 'node_modules/@deepseek-ai/dsh-client-ui-permission-presets/lib/client.js', marker: '太可怕了' },
+      { file: 'node_modules/@deepseek-ai/dsh-client-ui-conversation/lib/client.js', marker: '太可怕了' },
+    ],
+  },
+  {
+    id: 'auto-reapply',
+    title: '启动自动重打定制',
+    detail: '每次启动都会把全部定制补丁重新应用到当前运行时，保证 Harness 升级后定制不丢。',
+  },
+];
+
+// 帮助窗口展示前，对带 verify 的条目按当前活跃 runtime 实测是否生效。
+function modificationStatus() {
+  const runtime = dshRuntimeRoot();
+  const allVerified = (v) => {
+    const list = Array.isArray(v) ? v : [v];
+    return list.every(({ file, marker }) => {
+      try {
+        const p = path.join(runtime || '', file);
+        return fs.existsSync(p) && fs.readFileSync(p, 'utf8').includes(marker);
+      } catch (e) { return false; }
+    });
+  };
+  return CUSTOM_MODIFICATIONS.map((item) => ({
+    id: item.id,
+    title: item.title,
+    detail: item.detail,
+    verified: item.verify ? allVerified(item.verify) : undefined,
+  }));
+}
+
 let helpWin = null;
 function showHelp() {
   if (helpWin && !helpWin.isDestroyed()) { helpWin.show(); helpWin.focus(); return; }
@@ -679,12 +1032,217 @@ function showHelp() {
     icon: iconPath(256),
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
-  helpWin.loadFile('help.html');
+  helpWin.loadFile('help.html', {
+    query: {
+      mods: JSON.stringify(modificationStatus()),
+      ver: dshVersion() || '',
+    },
+  });
   helpWin.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/i.test(url)) shell.openExternal(url);
     return { action: 'deny' };
   });
   helpWin.on('closed', () => { helpWin = null; });
+}
+
+// ---------------------------------------------------------------- installed skills
+
+// Mirror the default roots of @deepseek-ai/dsh-skill-filesystem (rank order):
+// project `.dsh/skills`, project `.agents/skills`, user `$DSH_HOME/skills`,
+// legacy `~/.dsh/skills`, and shared `~/.agents/skills`. The workspace comes
+// from DSH_WORKSPACE / the shell cwd / its parent / the user home.
+function skillWorkspaces() {
+  const home = app.getPath('home');
+  const out = [];
+  const add = (p) => { if (p && typeof p === 'string') out.push(p); };
+  add(process.env.DSH_WORKSPACE);
+  add(process.cwd());
+  try { add(path.resolve(__dirname, '..')); } catch (e) { /* ignore */ }
+  add(home);
+  return out;
+}
+
+function skillRoots() {
+  const home = app.getPath('home');
+  const roots = [];
+  for (const ws of skillWorkspaces()) {
+    roots.push(path.join(ws, '.dsh', 'skills'));
+    roots.push(path.join(ws, '.agents', 'skills'));
+  }
+  if (currentAccountId) roots.push(path.join(accountHome(currentAccountId), 'skills'));
+  roots.push(path.join(home, '.dsh', 'skills'));
+  roots.push(path.join(home, '.agents', 'skills'));
+
+  const seen = new Set();
+  return roots.filter((r) => {
+    let k;
+    try { k = path.resolve(r).toLowerCase(); } catch (e) { k = r.toLowerCase(); }
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
+function yamlLib() {
+  try {
+    const runtime = dshRuntimeRoot();
+    if (runtime) {
+      const p = path.join(runtime, 'node_modules', 'yaml');
+      if (fs.existsSync(p)) return require(p);
+    }
+  } catch (e) { /* ignore */ }
+  return null;
+}
+
+// Minimal fallback when the `yaml` package is unavailable in the runtime.
+function fallbackFrontmatter(body) {
+  const name = (body.match(/^\s*name:\s*["']?([^"'\r\n]+)/m) || [])[1];
+  const dm = body.match(/^\s*description:\s*(?:["']([^"']*)["']|(.*))?/m);
+  let description = '';
+  if (dm) description = (dm[1] !== undefined ? dm[1] : (dm[2] || '')).trim();
+  if (/^[>|][-]?$/.test(description)) {
+    const rest = body.slice(body.indexOf(dm[0]) + dm[0].length);
+    const lines = rest.split(/\r?\n/).filter((l) => l.trim() !== '' && /^\s+/.test(l));
+    description = lines.map((l) => l.trim()).join(' ');
+  }
+  return { name: name ? name.trim() : null, description };
+}
+
+function readSkillFrontmatter(mdPath) {
+  let text;
+  try { text = fs.readFileSync(mdPath, 'utf8'); } catch (e) { return null; }
+  const m = text.match(/^\uFEFF?---\r?\n([\s\S]*?)\r?\n---/);
+  if (!m) return null;
+  const yaml = yamlLib();
+  let fm = null;
+  if (yaml) { try { fm = yaml.parse(m[1]); } catch (e) { fm = null; } }
+  if (!fm || typeof fm !== 'object' || Array.isArray(fm)) return fallbackFrontmatter(m[1]);
+  const name = typeof fm.name === 'string' ? fm.name : null;
+  const description = typeof fm.description === 'string' ? fm.description : '';
+  if (!name) return fallbackFrontmatter(m[1]);
+  return { name, description };
+}
+
+function scanSkills() {
+  const results = [];
+  const seen = new Set();
+  for (const root of skillRoots()) {
+    let entries = [];
+    try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch (e) { continue; }
+    for (const ent of entries) {
+      let mdPath = null;
+      let kind = '目录';
+      if (ent.isDirectory()) {
+        const p = path.join(root, ent.name, 'SKILL.md');
+        if (fs.existsSync(p)) mdPath = p;
+      } else if (ent.isFile() && ent.name.toLowerCase().endsWith('.md') && ent.name.toLowerCase() !== 'skill.md') {
+        mdPath = path.join(root, ent.name);
+        kind = '单文件';
+      }
+      if (!mdPath) continue;
+      const fm = readSkillFrontmatter(mdPath);
+      if (!fm || !fm.name) continue;
+      const key = fm.name.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      results.push({ name: fm.name, description: fm.description || '', kind, root, path: mdPath });
+    }
+  }
+  results.sort((a, b) => a.name.localeCompare(b.name));
+  return results;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+
+function buildSkillsHtml(skills) {
+  const items = skills.map((s) => `
+    <div class="card">
+      <div class="head"><span class="name">${escapeHtml(s.name)}</span><span class="kind">${escapeHtml(s.kind)}</span></div>
+      <div class="desc">${escapeHtml(s.description) || '<em>（无描述）</em>'}</div>
+      <div class="src" title="${escapeHtml(s.path)}">${escapeHtml(s.path)}</div>
+    </div>`).join('');
+
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>已装 Skills</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+         background: #0b0e14; color: #e6e9ef; }
+  header { position: sticky; top: 0; padding: 14px 18px; background: #0b0e14;
+           border-bottom: 1px solid #1c2230; display: flex; gap: 12px; align-items: center; }
+  header h1 { font-size: 16px; margin: 0; white-space: nowrap; }
+  .count { color: #8b93a7; font-size: 13px; white-space: nowrap; }
+  #q { flex: 1; min-width: 120px; padding: 8px 12px; border-radius: 8px; border: 1px solid #2a3245;
+       background: #12161f; color: #e6e9ef; font-size: 14px; outline: none; }
+  #q:focus { border-color: #4d7cfe; }
+  main { padding: 16px 18px 28px; display: flex; flex-direction: column; gap: 12px; }
+  .card { background: #12161f; border: 1px solid #1c2230; border-radius: 10px; padding: 12px 14px; }
+  .head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+  .name { font-weight: 600; font-size: 14.5px; color: #7aa2ff; }
+  .kind { font-size: 12px; color: #8b93a7; border: 1px solid #2a3245; border-radius: 6px; padding: 1px 7px; white-space: nowrap; }
+  .desc { margin-top: 6px; font-size: 13px; line-height: 1.6; color: #c6ccd8; white-space: pre-wrap; }
+  .src { margin-top: 8px; font-size: 11.5px; color: #6b7385; word-break: break-all; }
+  .empty { color: #8b93a7; text-align: center; padding: 40px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>已装 Skills</h1>
+  <span class="count">共 ${skills.length} 个</span>
+  <input id="q" type="search" placeholder="搜索名称或功能…" autofocus>
+</header>
+<main id="list">${items || '<div class="empty">没有发现任何 skill</div>'}</main>
+<script>
+  var q = document.getElementById('q');
+  var cards = Array.prototype.slice.call(document.querySelectorAll('.card'));
+  q.addEventListener('input', function () {
+    var t = q.value.trim().toLowerCase();
+    var n = 0;
+    cards.forEach(function (c) {
+      var hit = !t || c.textContent.toLowerCase().indexOf(t) !== -1;
+      c.style.display = hit ? '' : 'none';
+      if (hit) n++;
+    });
+    document.querySelector('.count').textContent = '共 ' + cards.length + ' 个 · 显示 ' + n + ' 个';
+  });
+</script>
+</body>
+</html>`;
+}
+
+let skillsWin = null;
+function showSkills() {
+  const skills = scanSkills();
+  const url = 'data:text/html;charset=utf-8,' + encodeURIComponent(buildSkillsHtml(skills));
+  if (skillsWin && !skillsWin.isDestroyed()) {
+    skillsWin.loadURL(url);
+    skillsWin.show(); skillsWin.focus();
+    return;
+  }
+  skillsWin = new BrowserWindow({
+    width: 780,
+    height: 840,
+    parent: win || undefined,
+    title: '已装 Skills',
+    autoHideMenuBar: true,
+    backgroundColor: '#0b0e14',
+    icon: iconPath(256),
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+  });
+  skillsWin.loadURL(url);
+  skillsWin.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:/i.test(url)) shell.openExternal(url);
+    return { action: 'deny' };
+  });
+  skillsWin.on('closed', () => { skillsWin = null; });
 }
 
 let petWin = null;
@@ -839,6 +1397,7 @@ function buildTrayMenu() {
     { label: '注销账户', click: () => logout() },
     { label: '申请 API（注册账户）', click: () => shell.openExternal('https://platform.deepseek.com/') },
     { label: '桌面精灵', click: () => togglePet() },
+    { label: '查看已装 Skills', click: () => showSkills() },
     { label: '帮助', click: () => showHelp() },
     { label: '在浏览器中打开', click: () => shell.openExternal(WEB_URL) },
     { type: 'separator' },
@@ -858,6 +1417,7 @@ function installAppMenu() {
         { label: '注销账户', click: () => logout() },
         { label: '申请 API（注册账户）', click: () => shell.openExternal('https://platform.deepseek.com/') },
         { label: '桌面精灵', click: () => togglePet() },
+        { label: '查看已装 Skills', click: () => showSkills() },
         { label: '帮助', click: () => showHelp() },
         { type: 'separator' },
         { label: '退出', role: 'quit' },

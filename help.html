@@ -21,6 +21,11 @@ td.k { color: #8fa3ff; white-space: nowrap; width: 130px; }
 td.v { color: #c9d0db; }
 .disclaimer { color: #9aa3b2; font-size: 12px; background: #151821; border: 1px solid #232a3a; border-radius: 8px; padding: 12px; }
 .ad { color: #e6a23c; font-size: 13px; text-align: center; margin-top: 24px; font-weight: 600; }
+.mod { background: #151821; border: 1px solid #232a3a; border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
+.mod-t { font-size: 13px; font-weight: 600; color: #e6e8ee; margin-bottom: 4px; }
+.mod-d { font-size: 12px; color: #9aa3b2; }
+.ok { color: #67c23a; font-size: 11px; margin-left: 8px; font-weight: 400; }
+.warn { color: #e6a23c; font-size: 11px; margin-left: 8px; font-weight: 400; }
 </style>
 </head>
 <body>
@@ -33,11 +38,12 @@ td.v { color: #c9d0db; }
 
   <h2>菜单说明</h2>
   <table>
-    <tr><td class="k">检查更新</td><td class="v">查询 npm 上 DeepSeek Harness（dsh）本体是否有新版本，有则可一键更新到最新版。</td></tr>
+    <tr><td class="k">检查更新</td><td class="v">查询 npm 上 DeepSeek Harness（dsh）本体是否有新版本，有则可一键更新到最新版（并同步升级第三方插件，失败自动回滚）。</td></tr>
     <tr><td class="k">切换账号（API Key）</td><td class="v">切换到另一个 DeepSeek API 账号。各账号的数据（聊天记录等）彼此隔离，互不可见。</td></tr>
     <tr><td class="k">注销账户</td><td class="v">退出当前 API 账号并回到登录界面，该账号的聊天记录会保留，下次登录同一账号可恢复。</td></tr>
     <tr><td class="k">申请 API（注册账户）</td><td class="v">打开 DeepSeek 开放平台官网，去注册账户、充值、申请 API Key。</td></tr>
     <tr><td class="k">桌面精灵</td><td class="v">在桌面显示一个鲸鱼娘小精灵，头顶实时显示时间，可设定闹钟与倒计时。</td></tr>
+    <tr><td class="k">查看已装 Skills</td><td class="v">列出本机已安装的技能（skills）的名称、功能描述与来源路径，可搜索。</td></tr>
     <tr><td class="k">帮助</td><td class="v">打开本帮助窗口。</td></tr>
     <tr><td class="k">在浏览器中打开</td><td class="v">用默认浏览器打开 Harness 网页界面（托盘菜单提供）。</td></tr>
   </table>
@@ -50,13 +56,34 @@ td.v { color: #c9d0db; }
   <p><b>工作区是什么：</b>工作区（workspace）是 Harness 这个 AI 助手在你电脑上「干活」的根目录。AI 读文件、写文件、执行命令、创建项目，都发生在这个目录范围内。</p>
   <p><b>为什么要设定：</b>设定工作区，就是告诉 AI「请在这个文件夹里工作」。这样 AI 的操作范围会被限定在你指定的目录内，既方便你管理它生成或修改的文件，也更安全——它不会去乱动这个目录之外的其他文件。建议单独建一个空文件夹作为工作区。</p>
 
-  <h2>本客户端的定制改动</h2>
-  <p>本客户端在 DeepSeek Harness 本体之上做了以下定制，使其更适合桌面使用：</p>
-  <p><b>· 目录选择器：</b>设置工作区时改用 Windows 原生文件夹框（PowerShell 实现，绕开了部分机器上会崩溃的原生组件），默认定位到安装目录。</p>
-  <p><b>· 删除保护：</b>AI 删除文件/目录时，会移到工作区内的 <b>垃圾箱</b> 文件夹，而非彻底删除；需要时可从该文件夹恢复，不需要时再手动彻底删除。</p>
-  <p><b>· Full access 风险警告：</b>切换到 Full access 权限时，会弹出高风险警告，需你明确确认后才生效。</p>
-  <p><b>· 多账号隔离：</b>每个 API Key 独立数据目录，聊天记录互不可见。</p>
-  <p>以上定制在升级 Harness 本体后会自动重新应用，无需手动处理。</p>
+  <h2 id="mods-title">当前版本相对原版 Harness 的定制改动</h2>
+  <p>以下仅列出<b>当前版本</b>相对原版 Harness 的差异，不包含历史改动记录：</p>
+  <div id="mods-list"><p>正在加载改动清单…</p></div>
+  <p>以上定制在升级 Harness 本体后会自动重新应用；若某项标记「⚠ 未检测到」，说明对应补丁未能自动重打，请检查壳子源码中的对应补丁。</p>
+  <script>
+  (function () {
+    function escapeHtml(s) { return String(s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+    var listEl = document.getElementById('mods-list');
+    if (!listEl) return;
+    var params = new URLSearchParams(location.search);
+    var raw = params.get('mods');
+    var ver = params.get('ver') || '';
+    var items = [];
+    try { items = JSON.parse(raw || '[]'); } catch (e) { items = []; }
+    if (!Array.isArray(items) || items.length === 0) {
+      listEl.innerHTML = '<p>未能加载定制改动清单。</p>';
+      return;
+    }
+    var titleEl = document.getElementById('mods-title');
+    if (titleEl) titleEl.textContent = '当前版本相对原版 Harness 的定制改动' + (ver ? '（Harness v' + ver + '）' : '');
+    listEl.innerHTML = items.map(function (it) {
+      var badge = '';
+      if (it.verified === true) badge = '<span class="ok">✓ 已生效</span>';
+      else if (it.verified === false) badge = '<span class="warn">⚠ 未检测到</span>';
+      return '<div class="mod"><div class="mod-t">' + escapeHtml(it.title) + badge + '</div><div class="mod-d">' + escapeHtml(it.detail) + '</div></div>';
+    }).join('');
+  })();
+  </script>
 
   <h2>免责声明</h2>
   <p class="disclaimer">本桌面客户端（DSH-Windows桌面版）仅适用于Windows系统，当前版本制作于 2026-08-14。本客户端的 logo 与精灵形象由即梦 AI 辅助生成，并经作者使用 Photoshop 人工编辑调整。作者仅制作了外层的Windows客户端外壳（Electron 封装），壳内核心仍是 DeepSeek Harness 本体（deepseek-ai/deepseek-harness）。若他人擅自改动此客户端并因此产生任何问题，作者不承担任何责任。</p>
