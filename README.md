@@ -36,7 +36,10 @@ npm.cmd start          # 用 npm.cmd 避免 .ps1 执行策略报错
 
 ## 打包成 exe
 
-- **双击 `dist.bat`**（推荐），自动装 electron-builder 并打包；或：
+- **双击 `dist.bat`**（推荐），它会依次：启用上传隐私自检钩子 → 检查 Node.js →
+  把「本机已安装应用里更新后的运行时」自动镜像进 `dsh-runtime/`（若更新过）→
+  自动把 `package.json` 的版本号同步成 dsh 版本 → 检查 electron-builder（缺失则自动安装）→ 打包。
+- 或手动：
 ```powershell
 cd <你的项目目录>\electron
 npm.cmd install --save-dev electron-builder   # 首次打包前
@@ -46,11 +49,11 @@ npm.cmd run dist
 产物在 `dist/`：NSIS 安装包（`.exe`）等。安装包体积较大（约 200MB+），
 因为内置了 dsh 的完整运行时（约 246MB，打包后经 LZMA 压缩）。
 
-> 打包前需保证 `dsh-runtime\node_modules\...` 已就位（`dist.bat` 会自动检查）。
+> 打包前需保证 `dsh-runtime\node_modules\...` 已就位（`dist.bat` 会自动检查并尝试从已安装应用镜像）。
 > 首次搭建时用：
 > `robocopy "%LOCALAPPDATA%\npm-cache\_npx\<hash>\node_modules" "dsh-runtime\node_modules" /E`
 
-## 从源码构建（给开发者）
+## 从源码构建（build-from-source，给开发者）
 
 `.gitignore` 排除了体积大 / 含第三方包的内容，clone 源码后需自行准备以下目录才能打包：
 
@@ -65,7 +68,7 @@ npm.cmd run dist
    mkdir dsh-runtime
    cd dsh-runtime
    npm init -y
-   npm install @deepseek-ai/dsh@0.1.0-rc.6
+   npm install @deepseek-ai/dsh@0.1.1-rc.1
    cd ..
    ```
    这会在 `dsh-runtime/node_modules` 装好 dsh 及其全部依赖，并生成 `package.json`。
@@ -82,7 +85,10 @@ npm.cmd run dist
 
 - 启动时若 `127.0.0.1:3080` 未运行，自动以隐藏方式拉起 `dsh web`（日志写在 `dsh-server.log`）；
 - 关闭窗口 = 最小化到托盘，服务继续跑；托盘「退出」才真正退出（并停掉它自己拉起的服务）；
-- 外部链接一律交给默认浏览器，不会在壳内打开。
+- 外部链接一律交给默认浏览器，不会在壳内打开；
+- **高峰时段提示条**：界面最顶部常驻提示「高峰时段（北京时间 9:00 - 12:00、14:00 - 18:00）token 价格贵，
+  请节省 token」，右侧 × 可临时关闭（仅本次会话）；提示后附链接「**在浏览器中查看具体价格**」，
+  点击即用默认浏览器打开 DeepSeek 官方价格文档（api-docs.deepseek.com 的 pricing 页）。
 
 ## 顶部 Harness 菜单
 
@@ -91,12 +97,14 @@ npm.cmd run dist
 | 菜单项 | 作用 |
 |---|---|
 | `DeepSeek Harness x.y.z` | 显示当前 Harness 版本（灰显） |
-| 检查更新 | 查 npm 上 `@deepseek-ai/dsh` 新版，可一键更新，并同步升级 profile 中的第三方插件（失败自动回滚） |
+| 检查更新 | 查 npm 上 `@deepseek-ai/dsh` 新版，可一键更新，并同步升级 profile 中的第三方插件（失败自动回滚）；更新过程弹出小窗口实时显示进度 |
 | 切换账号（API Key） | 切到登录页（预填当前 key），登录后加载该账号数据 |
 | 注销账户 | 退出当前账号并回到登录页（窗口不关闭），聊天记录保留在该账号下 |
 | 申请 API（注册账户） | 用默认浏览器打开 DeepSeek 开放平台 `https://platform.deepseek.com/` |
 | 桌面精灵 | 桌面悬浮鲸鱼娘：实时时间、闹钟、倒计时 |
 | 查看已装 Skills | 弹出独立窗口，列出本机已装 skills 的名称、功能描述与来源路径（带搜索框） |
+| 帮助 | 打开帮助窗口（菜单说明、定制差异清单、免责声明） |
+| 在浏览器中打开 | 用默认浏览器打开 Harness 网页界面（托盘菜单提供） |
 
 登录页（未登录状态下的主窗口界面）提供：API Key 输入框、登录按钮、以及「申请 API（注册账户）」链接。
 
@@ -115,12 +123,27 @@ npm.cmd run dist
 - 本壳已把 native 选择器的 Win32 实现**改用 PowerShell 的 FolderBrowserDialog**（绕开 koffi），
   默认初始目录为 exe 安装位置（经 `DSH_APP_DIR` 传入）；每次更新 dsh 后 `applyNativePickerPatch` 会自动重打补丁。
 
+## 安全防护（定制补丁）
+
+- **删除保护（垃圾箱）**：AI 删除文件/目录时，一律移到工作区内的 `垃圾箱` 文件夹（带时间戳后缀防重名），
+  而非彻底删除，需要时可从中恢复；仅在你明确要求永久删除时才执行真正的删除；
+- **完全权限（Full access）强警告**：在三个入口启用完全权限时都会弹出「⚠️ 高风险警告」并要求明确确认——
+  ① 新会话默认权限设置、② 当前会话权限弹窗、③ 聊天内切换；警告如实说明风险（可能读写、覆盖甚至删除电脑文件）；
+- **权限申请双选项规则**：AI 遇到操作被沙盒拒绝时，先停下给出「① 手动方案（你自己在终端可跑的命令，无需提权）
+  ② 临时提权（要什么级别、要重试哪条命令）」两个选项，只有你明确选择 ② 才会带 `sandbox_permissions` 重试，
+  不会自作主张提权；
+- 上述补丁 + 目录选择器补丁在**每次启动和每次 Harness 升级后自动重新应用**（幂等，永久生效）；
+- 帮助窗口内置「当前版本相对原版 Harness 的差异清单」，按活跃运行时逐项实测，显示「✓ 已生效 / ⚠ 未检测到」。
+
 ## 自动更新
 
 - **检测对象**：npm 上的 `@deepseek-ai/dsh`（即 Harness 本体）新版本；
 - **时机**：仅手动 —— 托盘菜单「Check for Updates」点击后检查（不做定时自动检查）；
 - **流程**：发现新版 → 弹窗询问 → 点「Update Now」→ 停服务、把运行时复制到 `%APPDATA%\dsh-windows-desktop\dsh-runtime`、
   用内置 Node 跑打包的 npm 安装新版 → 同步升级第三方插件 → 自动重启服务并刷新页面；
+- **更新进度小窗口**：整个更新过程会弹出独立的「Harness 更新中」小窗口，实时显示
+  「停止服务 → 备份 → 下载安装 → 校验 → 打补丁 → 同步插件 → 重启服务」7 个阶段及当前说明，
+  下载安装期间不再"无提示假死"（可手动关闭，更新结束自动关闭）；
 - **第三方插件同步**：通过 dsh CLI 的 pnpm 转发器（`dsh plugin --profile web update <插件>`）把 profile
   `package.json` 里同时声明在 `dsh.profile.bundles` 的插件升级到最新（自动写入 `minimumReleaseAge: 0`，避免 pnpm 11
   对新发布版本静默跳过）；Harness 已是最新时点「检查更新」也会单独同步插件。插件同步失败不影响 Harness 本体更新，会在结果弹窗中提示；

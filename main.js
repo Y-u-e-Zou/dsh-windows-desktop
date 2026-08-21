@@ -351,8 +351,10 @@ function applyNativePickerPatch(runtimeRoot) {
 
 // Re-apply our dsh tweaks after any dsh (re)install: npm install restores the
 // default tool descriptions and permission confirmation copy. Keeps (1) the
-// recycle-bin deletion guidance in the pwsh tool and (2) the strong
-// Full-access warning in the permission confirmation dialog.
+// recycle-bin deletion guidance in the pwsh tool, (2)/(3) the strong
+// Full-access warnings in the permission dialogs, and (4) the
+// permission-denial two-option rule (manual steps + optional temporary
+// elevation) that replaces auto-escalation with sandbox_permissions.
 function applyDshTweaks(runtimeRoot) {
   // (1) move-to-垃圾箱 deletion guidance
   try {
@@ -365,25 +367,50 @@ function applyDshTweaks(runtimeRoot) {
     }
   } catch (e) { /* ignore */ }
 
-  // (2) strong Full-access warning copy
+  // (2) strong Full-access warning copy — 0.1.1-rc.1 renamed Full access→完全权限
+  //     and agent→智能体, so the old anchors drifted. Both confirm blocks now have
+  //     their own marker and anchor.
   try {
     const permPath = path.join(runtimeRoot, 'node_modules', '@deepseek-ai', 'dsh-client-ui-permission-presets', 'lib', 'client.js');
     let c = fs.readFileSync(permPath, 'utf8');
-    if (!c.includes('太可怕了')) {
-      const old = '\t\t\t"confirm.title": "确认启用 Full access？",\n\t\t\t"confirm.description": "启用 Full access 后，agent 将减少确认步骤，并且可以直接执行更多操作，包括敏感操作、文件修改或外部命令。仅建议在你信任当前任务时使用。",\n\t\t\t"confirm.acknowledge": "我已了解风险，并愿意继续",\n\t\t\t"confirm.cancel": "取消",\n\t\t\t"confirm.enable": "启用 Full access"';
-      const neo = '\t\t\t"confirm.title": "⚠️ 高风险警告：确认启用 Full access？",\n\t\t\t"confirm.description": "Full access 是一个高风险选项，非专业人士不建议使用。启用后 AI 将不受任何限制，可能读写、覆盖甚至删除你电脑里的所有文件（有把整个电脑文件删光的风险）。",\n\t\t\t"confirm.acknowledge": "我已了解风险，并愿意继续",\n\t\t\t"confirm.cancel": "太可怕了，那我不用这个模式了",\n\t\t\t"confirm.enable": "没问题，我是专家，会控制预防这种情况"';
-      if (c.includes(old)) { c = c.replace(old, neo); fs.writeFileSync(permPath, c, 'utf8'); }
+    let changed = false;
+    // (2a) new-session default permission dialog (zh dict)
+    if (!c.includes('后续新会话中的 AI')) {
+      const old = '\t\t\t"confirm.title": "确认启用完全权限？",\n\t\t\t"confirm.description": "启用完全权限后，新会话将减少确认步骤，并且可以直接执行更多操作，包括敏感操作、文件修改或外部命令。仅建议在你信任后续任务时使用。",\n\t\t\t"confirm.acknowledge": "我已了解风险，并愿意继续",\n\t\t\t"confirm.cancel": "取消",\n\t\t\t"confirm.enable": "启用完全权限"';
+      const neo = '\t\t\t"confirm.title": "⚠️ 高风险警告：确认启用完全权限？",\n\t\t\t"confirm.description": "完全权限是一个高风险选项，非专业人士不建议使用。启用后，后续新会话中的 AI 将不受任何限制，可能读写、覆盖甚至删除你电脑里的所有文件（有把整个电脑文件删光的风险）。",\n\t\t\t"confirm.acknowledge": "我已了解风险，并愿意继续",\n\t\t\t"confirm.cancel": "太可怕了，那我不用这个模式了",\n\t\t\t"confirm.enable": "没问题，我是专家，会控制预防这种情况"';
+      if (c.includes(old)) { c = c.replace(old, neo); changed = true; }
     }
+    // (2b) current-session popup gate (accessZh dict)
+    if (!c.includes('当前会话的 AI')) {
+      const old = '\t\t\t"confirm.title": "确认启用完全权限？",\n\t\t\t"confirm.description": "启用完全权限后，智能体将减少确认步骤，并且可以直接执行更多操作，包括敏感操作、文件修改或外部命令。仅建议在你信任当前任务时使用。",\n\t\t\t"confirm.acknowledge": "我已了解风险，并愿意继续",\n\t\t\t"confirm.cancel": "取消",\n\t\t\t"confirm.enable": "启用完全权限"';
+      const neo = '\t\t\t"confirm.title": "⚠️ 高风险警告：确认启用完全权限？",\n\t\t\t"confirm.description": "完全权限是一个高风险选项，非专业人士不建议使用。启用后，当前会话的 AI 将不受任何限制，可能读写、覆盖甚至删除你电脑里的所有文件（有把整个电脑文件删光的风险）。",\n\t\t\t"confirm.acknowledge": "我已了解风险，并愿意继续",\n\t\t\t"confirm.cancel": "太可怕了，那我不用这个模式了",\n\t\t\t"confirm.enable": "没问题，我是专家，会控制预防这种情况"';
+      if (c.includes(old)) { c = c.replace(old, neo); changed = true; }
+    }
+    if (changed) fs.writeFileSync(permPath, c, 'utf8');
   } catch (e) { /* ignore */ }
 
   // (3) strong Full-access warning in the in-conversation permission switch
+  //     (0.1.1-rc.1 renamed Full access→完全权限 / agent→智能体)
   try {
     const convPath = path.join(runtimeRoot, 'node_modules', '@deepseek-ai', 'dsh-client-ui-conversation', 'lib', 'client.js');
     let c = fs.readFileSync(convPath, 'utf8');
     if (!c.includes('太可怕了')) {
-      const old = '\t\t\t"access.confirm.title": "确认启用 Full access？",\n\t\t\t"access.confirm.description": "启用 Full access 后，agent 将减少确认步骤，并且可以直接执行更多操作，包括敏感操作、文件修改或外部命令。仅建议在你信任当前任务时使用。",\n\t\t\t"access.confirm.acknowledge": "我已了解风险，并愿意继续",\n\t\t\t"access.confirm.cancel": "取消",\n\t\t\t"access.confirm.enable": "启用 Full access"';
-      const neo = '\t\t\t"access.confirm.title": "⚠️ 高风险警告：确认启用 Full access？",\n\t\t\t"access.confirm.description": "Full access 是一个高风险选项，非专业人士不建议使用。启用后 AI 将不受任何限制，可能读写、覆盖甚至删除你电脑里的所有文件（有把整个电脑文件删光的风险）。",\n\t\t\t"access.confirm.acknowledge": "我已了解风险，并愿意继续",\n\t\t\t"access.confirm.cancel": "太可怕了，那我不用这个模式了",\n\t\t\t"access.confirm.enable": "没问题，我是专家，会控制预防这种情况"';
+      const old = '\t\t\t"access.confirm.title": "确认启用完全权限？",\n\t\t\t"access.confirm.description": "启用完全权限后，智能体将减少确认步骤，并且可以直接执行更多操作，包括敏感操作、文件修改或外部命令。仅建议在你信任当前任务时使用。",\n\t\t\t"access.confirm.acknowledge": "我已了解风险，并愿意继续",\n\t\t\t"access.confirm.cancel": "取消",\n\t\t\t"access.confirm.enable": "启用完全权限"';
+      const neo = '\t\t\t"access.confirm.title": "⚠️ 高风险警告：确认启用完全权限？",\n\t\t\t"access.confirm.description": "完全权限是一个高风险选项，非专业人士不建议使用。启用后，当前会话中的 AI 将不受任何限制，可能读写、覆盖甚至删除你电脑里的所有文件（有把整个电脑文件删光的风险）。",\n\t\t\t"access.confirm.acknowledge": "我已了解风险，并愿意继续",\n\t\t\t"access.confirm.cancel": "太可怕了，那我不用这个模式了",\n\t\t\t"access.confirm.enable": "没问题，我是专家，会控制预防这种情况"';
       if (c.includes(old)) { c = c.replace(old, neo); fs.writeFileSync(convPath, c, 'utf8'); }
+    }
+  } catch (e) { /* ignore */ }
+
+  // (4) permission-denial rule: instead of auto-escalating with
+  //     sandbox_permissions, present ① manual steps and ② optional temporary
+  //     elevation, and only escalate after the user explicitly picks ②.
+  try {
+    const pwshRulePath = path.join(runtimeRoot, 'node_modules', '@deepseek-ai', 'dsh-tool-pwsh', 'lib', 'index.js');
+    let c = fs.readFileSync(pwshRulePath, 'utf8');
+    if (!c.includes('手动方案')) {
+      const old = 'When a command is denied and a wider mode would let it succeed, escalate immediately in the same turn — the one sanctioned exception to a denial: retry the exact same command once with `sandbox_permissions` (the narrowest wider mode that suffices) plus a one-sentence `justification`. Do not detour through chat to ask permission first — the approval prompt raised by that retry is how the user consents.';
+      const neo = 'When a command is denied and a wider mode would let it succeed, do NOT retry it with `sandbox_permissions` on your own. Stop and answer with two options side by side: ① 手动方案 (manual path) — explain exactly which step was denied and why it needs wider access, then give the complete command or steps the user can run themselves in their own terminal, so no elevation is needed; ② 临时提权 (temporary elevation) — state which `sandbox_permissions` level (`workspace-write` or `danger-full-access`) and the exact command you would retry, and only retry it with `sandbox_permissions` plus a one-sentence `justification` after the user explicitly chooses this option. Default to waiting for the user\'s choice — do not escalate proactively, and present both options before asking for approval.';
+      if (c.includes(old)) { c = c.replace(old, neo); fs.writeFileSync(pwshRulePath, c, 'utf8'); }
     }
   } catch (e) { /* ignore */ }
 }
@@ -515,30 +542,40 @@ async function performUpdate(targetVersion) {
   const npmCli = npmCliPath();
   if (!npmCli) throw new Error('update tooling not found in this installation');
 
+  // 等进度窗口完成加载并画出初始内容，再开始后续步骤（避免窗口空白阶段）
+  await beginUpdateProgress(targetVersion);
+
   // 1) stop the server we manage
+  updateProgressStage('stop', '正在停止后台 dsh 服务（主窗口页面会暂时不可用）');
   stopServer();
 
   // 2) snapshot the current writable runtime so a failed update can roll back
   const udRuntime = path.join(app.getPath('userData'), 'dsh-runtime');
   const backupDir = path.join(app.getPath('userData'), 'dsh-runtime.prev');
   const hadRuntime = fs.existsSync(path.join(udRuntime, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'));
+  updateProgressStage('backup', '把当前运行时备份为 dsh-runtime.prev');
   if (hadRuntime) {
-    try { fs.rmSync(backupDir, { recursive: true, force: true }); } catch (e) { /* ignore */ }
+    try { await fs.promises.rm(backupDir, { recursive: true, force: true }); } catch (e) { /* ignore */ }
     try {
-      fs.renameSync(udRuntime, backupDir);
+      await fs.promises.rename(udRuntime, backupDir);
     } catch (e) {
       throw new Error('无法备份当前运行时（可能有程序占用），已取消更新：' + String((e && e.message) || e));
     }
   }
 
   try {
-    // 2.5) baseline copy (keep the bundled one pristine)
+    // 2.5) baseline copy (keep the bundled one pristine) — 异步复制，不阻塞主进程，
+    //      进度窗口在此期间也能正常刷新
     if (!fs.existsSync(path.join(udRuntime, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'))) {
       const bundled = path.join(process.resourcesPath, 'dsh-runtime');
-      if (fs.existsSync(bundled)) fs.cpSync(bundled, udRuntime, { recursive: true });
+      if (fs.existsSync(bundled)) {
+        updateProgressStage('install', '正在准备运行环境（复制基线运行时，约数秒到数十秒）…');
+        await fs.promises.cp(bundled, udRuntime, { recursive: true });
+      }
     }
 
     // 3) install the new dsh into that writable runtime
+    updateProgressStage('install', '正在通过 npm 下载并安装，请耐心等待（视网速约 1-5 分钟）');
     await new Promise((resolve, reject) => {
       const env = Object.assign({}, process.env, { ELECTRON_RUN_AS_NODE: '1' });
       const child = spawn(process.execPath, [
@@ -561,34 +598,42 @@ async function performUpdate(targetVersion) {
 
     // 3.4) validate the fresh tree (complete / right version / boots) BEFORE
     //      patching; remember which patched files are CommonJS-checkable
+    updateProgressStage('verify', '校验版本号并试启动新运行时');
     const checkable = await verifiableJsFiles(udRuntime);
     await verifyUpdatedRuntime(udRuntime, targetVersion);
 
     // 3.5) pin the browse directory picker (native's koffi worker crashes under Electron's Node)
+    updateProgressStage('patch', '重新应用壳子定制补丁');
     applyNativePickerPatch(udRuntime);
     applyDshTweaks(udRuntime);
     await verifyPatchedFiles(checkable);
   } catch (e) {
     // roll back: drop the broken copy and restore the snapshot (or let the
     // app fall back to the pristine bundled runtime when there was none)
+    updateProgressFail('更新失败，正在回滚到上一个版本…');
     try {
-      fs.rmSync(udRuntime, { recursive: true, force: true });
-      if (hadRuntime) fs.renameSync(backupDir, udRuntime);
+      await fs.promises.rm(udRuntime, { recursive: true, force: true });
+      if (hadRuntime) await fs.promises.rename(backupDir, udRuntime);
     } catch (e2) { /* ignore */ }
-    throw new Error('update failed and was rolled back to the previous version: ' + String((e && e.message) || e));
+    const failMsg = 'update failed and was rolled back to the previous version: ' + String((e && e.message) || e);
+    setTimeout(() => closeUpdateProgressWindow(), 1500);   // 让失败状态可见片刻，随后弹出错误弹窗
+    throw new Error(failMsg);
   }
 
   // success: drop the snapshot
-  if (hadRuntime) { try { fs.rmSync(backupDir, { recursive: true, force: true }); } catch (e) { /* ignore */ } }
+  if (hadRuntime) { try { await fs.promises.rm(backupDir, { recursive: true, force: true }); } catch (e) { /* ignore */ } }
 
   // 3.6) keep third-party profile plugins in lockstep with the new harness
+  updateProgressStage('plugins', '通过 pnpm 同步第三方插件（约 1-2 分钟）');
   const pluginSync = await syncProfilePlugins(udRuntime);
   const pluginWarnings = pluginSync && !pluginSync.ok ? [`第三方插件同步失败：${pluginSync.error}`] : [];
 
   // 4) restart the server with the updated runtime, refresh the UI + version
+  updateProgressStage('restart', '重启 dsh 服务并刷新界面（最多等待 60 秒）');
   serverProc = startServer(currentAccountHome());
   await waitForPort(PORT, 60000);
   applyVersionDisplays();
+  closeUpdateProgressWindow();
   if (win) win.webContents.reload();
   return pluginWarnings;
 }
@@ -652,6 +697,172 @@ async function syncProfilePlugins(runtimeRoot) {
   }
 }
 
+// ---------------------------------------------------------------- update progress window
+
+// 更新期间的小进度窗口：主窗口页面依赖 dsh 服务渲染，更新第一步会停服务、
+// 页面随即"假死"。本窗口是独立的 BrowserWindow，实时显示当前更新阶段。
+let updateProgressWin = null;
+let updateProgressSuppressed = false;   // 用户手动关闭后，本次更新不再弹出
+
+const UPDATE_PROGRESS_STAGES = [
+  { key: 'stop', label: '停止后台服务' },
+  { key: 'backup', label: '备份当前运行时' },
+  { key: 'install', label: '' },        // 文案包含目标版本号，开始更新时填充
+  { key: 'verify', label: '校验新版本完整性' },
+  { key: 'patch', label: '应用定制补丁' },
+  { key: 'plugins', label: '同步第三方插件' },
+  { key: 'restart', label: '重启服务并刷新界面' },
+];
+
+let updateProgressState = null;   // { version, failed, sub, stages: [{key,label,status}] }
+
+function beginUpdateProgress(version) {
+  updateProgressState = {
+    version,
+    failed: false,
+    sub: '',
+    stages: UPDATE_PROGRESS_STAGES.map((s) => ({
+      key: s.key,
+      label: s.key === 'install' ? `下载并安装 Harness ${version}（视网速约 1-5 分钟）` : s.label,
+      status: 'pending',
+    })),
+  };
+  showUpdateProgressWindow();
+  // 等窗口真正加载并画出初始内容再继续，避免"空白窗口"阶段；
+  // 2 秒兜底超时，保证任何情况下都不卡住更新流程。
+  return new Promise((resolve) => {
+    const w = updateProgressWin;
+    if (!w) return resolve();
+    let done = false;
+    const finish = () => { if (!done) { done = true; pushUpdateProgress(); resolve(); } };
+    if (w.webContents.isLoading()) {
+      w.webContents.once('did-finish-load', finish);
+      setTimeout(finish, 2000);
+    } else {
+      finish();
+    }
+  });
+}
+
+function updateProgressStage(key, sub) {
+  if (!updateProgressState) return;
+  const st = updateProgressState.stages;
+  const idx = st.findIndex((s) => s.key === key);
+  if (idx < 0) return;
+  for (let i = 0; i < st.length; i++) st[i].status = i < idx ? 'done' : 'pending';
+  st[idx].status = 'doing';
+  updateProgressState.sub = sub || '';
+  pushUpdateProgress();
+}
+
+function updateProgressFail(sub) {
+  if (!updateProgressState) return;
+  updateProgressState.failed = true;
+  for (const s of updateProgressState.stages) if (s.status === 'doing') s.status = 'fail';
+  updateProgressState.sub = sub || '';
+  pushUpdateProgress();
+}
+
+function showUpdateProgressWindow() {
+  if (updateProgressWin || updateProgressSuppressed) return;
+  updateProgressWin = new BrowserWindow({
+    width: 430,
+    height: 320,
+    parent: win || undefined,
+    title: 'Harness 更新中',
+    autoHideMenuBar: true,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    backgroundColor: '#0b0e14',
+    icon: iconPath(256),
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+  });
+  updateProgressWin.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:/i.test(url)) shell.openExternal(url);
+    return { action: 'deny' };
+  });
+  updateProgressWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(buildUpdateProgressHtml(updateProgressState)));
+  updateProgressWin.webContents.once('did-finish-load', pushUpdateProgress);
+  updateProgressWin.on('closed', () => { updateProgressWin = null; updateProgressSuppressed = true; });
+}
+
+function pushUpdateProgress() {
+  if (!updateProgressWin || updateProgressWin.isDestroyed() || !updateProgressState) return;
+  updateProgressWin.webContents.executeJavaScript(`window.__progress(${JSON.stringify(updateProgressState)});`).catch(() => {});
+}
+
+function closeUpdateProgressWindow() {
+  updateProgressState = null;
+  if (updateProgressWin && !updateProgressWin.isDestroyed()) {
+    try { updateProgressWin.destroy(); } catch (e) { /* ignore */ }
+  }
+  updateProgressWin = null;
+  updateProgressSuppressed = false;   // 下次更新重新允许弹出
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function buildUpdateProgressHtml(state) {
+  // 初始状态直接烙进 HTML：窗口首次绘制就有完整内容，不依赖 JS 推送
+  const version = (state && state.version) || '';
+  const rows = (state && state.stages ? state.stages : [])
+    .map((s) => `<div class="stage st-pending"><span class="dot"></span><span>${escHtml(s.label)}</span></div>`)
+    .join('');
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>更新进度</title>
+<style>
+body{font-family:'Segoe UI','Microsoft YaHei',sans-serif;background:#0b0e14;color:#e8e8e8;margin:0;padding:16px 18px;user-select:none}
+h1{font-size:14px;margin:0 0 2px;font-weight:600;color:#ffc966}
+.sub{font-size:11px;color:#9aa0a6;margin-bottom:12px;min-height:15px}
+.stage{display:flex;align-items:center;gap:10px;padding:5px 0;font-size:13px;line-height:18px}
+.dot{flex:none;width:18px;height:18px;border-radius:50%;display:grid;place-items:center;font-size:10px}
+.st-pending{color:#6b7280}
+.st-pending .dot{background:#1c222b}
+.st-doing{color:#ffc966;font-weight:600}
+.st-doing .dot{background:rgba(255,176,32,.18);animation:pulse 1.2s ease-in-out infinite}
+.st-done{color:#9aa0a6}
+.st-done .dot{background:rgba(74,222,128,.16);color:#4ade80}
+.st-fail{color:#f87171;font-weight:600}
+.st-fail .dot{background:rgba(248,113,113,.18);color:#f87171}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+</style>
+</head>
+<body>
+<h1 id="h">正在更新 Harness ${escHtml(version)}</h1>
+<div class="sub" id="sub"></div>
+<div id="stages">${rows}</div>
+<script>
+window.__progress = function (s) {
+  s = s || {};
+  document.getElementById('h').textContent = s.failed ? '更新失败' : ('正在更新 Harness ' + (s.version || ''));
+  document.getElementById('sub').textContent = s.sub || '';
+  var box = document.getElementById('stages');
+  box.innerHTML = '';
+  (s.stages || []).forEach(function (st) {
+    var row = document.createElement('div');
+    var cls = st.status === 'done' ? 'st-done' : (st.status === 'doing' ? 'st-doing' : (st.status === 'fail' ? 'st-fail' : 'st-pending'));
+    row.className = 'stage ' + cls;
+    var dot = document.createElement('span');
+    dot.className = 'dot';
+    dot.textContent = st.status === 'done' ? '✓' : (st.status === 'doing' ? '●' : (st.status === 'fail' ? '✕' : ''));
+    var label = document.createElement('span');
+    label.textContent = st.label;
+    row.appendChild(dot);
+    row.appendChild(label);
+    box.appendChild(row);
+  });
+};
+</script>
+</body>
+</html>`;
+}
+
 async function checkForUpdates(manual = false) {
   if (updateCheckRunning || updating) return;
   updateCheckRunning = true;
@@ -682,6 +893,7 @@ async function checkForUpdates(manual = false) {
           serverProc = startServer(currentAccountHome());   // try to recover
         } finally {
           updating = false;
+          closeUpdateProgressWindow();
         }
       }
     } else if (manual) {
@@ -846,9 +1058,13 @@ function iconPath(size) {
 // 由壳子在主窗口每次完成页面加载后注入；main.js 不随 harness 更新被覆盖，永久生效。
 const PEAK_BANNER_ID = 'dsh-peak-banner';
 const PEAK_BANNER_TEXT = '高峰时段（北京时间 9:00 - 12:00、14:00 - 18:00）token 价格贵，请节省 token';
+const PEAK_BANNER_LINK_TEXT = '在浏览器中查看具体价格';
+const PEAK_BANNER_LINK_URL = 'https://api-docs.deepseek.com/zh-cn/quick_start/pricing/';
 const PEAK_BANNER_CSS = `
 #${PEAK_BANNER_ID}{flex:none;box-sizing:border-box;width:100%;min-height:26px;display:flex;align-items:center;justify-content:center;gap:8px;padding:3px 12px;background:linear-gradient(90deg,rgba(255,176,32,.14),rgba(255,176,32,.24),rgba(255,176,32,.14));color:var(--dsw-alias-label-primary,#e8e8e8);border-bottom:1px solid rgba(255,176,32,.35);font-size:12px;line-height:18px;letter-spacing:.2px;user-select:none;text-align:center}
 #${PEAK_BANNER_ID} .dsh-peak-text{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#${PEAK_BANNER_ID} .dsh-peak-link{flex:none;color:#ffc966;text-decoration:underline;text-underline-offset:2px;cursor:pointer;white-space:nowrap}
+#${PEAK_BANNER_ID} .dsh-peak-link:hover{color:#ffd98f}
 #${PEAK_BANNER_ID} .dsh-peak-close{flex:none;width:18px;height:18px;border:none;background:transparent;color:inherit;opacity:.6;cursor:pointer;border-radius:4px;padding:0;font-size:14px;line-height:18px;display:grid;place-items:center}
 #${PEAK_BANNER_ID} .dsh-peak-close:hover{opacity:1;background:rgba(255,255,255,.14)}
 body{display:flex!important;flex-direction:column!important;height:100vh!important;overflow:hidden!important;margin:0!important}
@@ -859,6 +1075,8 @@ function injectPeakBanner(wc) {
   wc.insertCSS(PEAK_BANNER_CSS).catch(() => {});
   const id = JSON.stringify(PEAK_BANNER_ID);
   const text = JSON.stringify(PEAK_BANNER_TEXT);
+  const linkText = JSON.stringify(PEAK_BANNER_LINK_TEXT);
+  const linkUrl = JSON.stringify(PEAK_BANNER_LINK_URL);
   wc.executeJavaScript(`(() => {
     if (document.getElementById(${id})) return;
     const bar = document.createElement('div');
@@ -866,6 +1084,13 @@ function injectPeakBanner(wc) {
     const label = document.createElement('span');
     label.className = 'dsh-peak-text';
     label.textContent = ${text};
+    const link = document.createElement('a');
+    link.className = 'dsh-peak-link';
+    link.textContent = ${linkText};
+    link.href = ${linkUrl};
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.title = '在默认浏览器中打开 DeepSeek API 价格文档';
     const close = document.createElement('button');
     close.type = 'button';
     close.className = 'dsh-peak-close';
@@ -874,6 +1099,7 @@ function injectPeakBanner(wc) {
     close.textContent = '\\u00d7';
     close.addEventListener('click', () => bar.remove());
     bar.appendChild(label);
+    bar.appendChild(link);
     bar.appendChild(close);
     document.body.prepend(bar);
   })();`).catch(() => {});
@@ -962,6 +1188,11 @@ const CUSTOM_MODIFICATIONS = [
     detail: '菜单「检查更新」可直接查询并一键升级 Harness 本体，并自动把 profile 中的第三方插件同步升级到最新版本（Harness 已是最新时也会同步插件）；更新前自动备份运行时，安装后先做完整性校验与试启动，失败自动回滚到更新前版本，升级后自动重新应用全部定制。',
   },
   {
+    id: 'update-progress',
+    title: '更新进度窗口',
+    detail: '点击「立即更新」后弹出小窗口，实时显示更新阶段（停止服务→备份→下载安装→校验→打补丁→同步插件→重启服务），下载安装期间不再"无提示假死"；可手动关闭，更新结束自动关闭。',
+  },
+  {
     id: 'pet',
     title: '桌面精灵',
     detail: '桌面鲸鱼娘小精灵：置顶显示本地时间，支持闹钟与倒计时。',
@@ -969,7 +1200,7 @@ const CUSTOM_MODIFICATIONS = [
   {
     id: 'peak-banner',
     title: '高峰时段提示条',
-    detail: '界面最顶部常驻提示「高峰时段（北京时间 9:00 - 12:00、14:00 - 18:00）token 价格贵」，提醒节省 token；右侧 × 可临时关闭（仅本次会话，下次打开仍显示）。',
+    detail: '界面最顶部常驻提示「高峰时段（北京时间 9:00 - 12:00、14:00 - 18:00）token 价格贵」，提醒节省 token；提示后附链接「在浏览器中查看具体价格」，点击在默认浏览器打开 DeepSeek API 价格文档；右侧 × 可临时关闭（仅本次会话，下次打开仍显示）。',
   },
   {
     id: 'picker',
@@ -986,11 +1217,17 @@ const CUSTOM_MODIFICATIONS = [
   {
     id: 'full-access-warning',
     title: 'Full access 高风险警告',
-    detail: '启用 Full access 时弹出强警告文案，需明确确认（权限设置弹窗与聊天内切换两处）。',
+    detail: '启用完全权限（Full access）时弹出强警告文案，需明确确认（新会话默认权限设置、当前会话弹窗、聊天内切换三处）。',
     verify: [
       { file: 'node_modules/@deepseek-ai/dsh-client-ui-permission-presets/lib/client.js', marker: '太可怕了' },
       { file: 'node_modules/@deepseek-ai/dsh-client-ui-conversation/lib/client.js', marker: '太可怕了' },
     ],
+  },
+  {
+    id: 'permission-two-options',
+    title: '权限申请双选项规则',
+    detail: 'agent 遇到权限被拒时，先给出「① 手动方案 ② 临时提权」两个选项，经你明确选择后才提权重试，而不是自动重试提权。',
+    verify: { file: 'node_modules/@deepseek-ai/dsh-tool-pwsh/lib/index.js', marker: '手动方案' },
   },
   {
     id: 'auto-reapply',
